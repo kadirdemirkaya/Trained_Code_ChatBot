@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Audio Streaming Client</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f2f2f2;
+            padding: 20px;
+            margin: 0;
+        }
+
+        h2 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        .input-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            max-width: 600px;
+            margin: 0 auto 20px auto;
+        }
+
+        #textInput {
+            flex: 1;
+            padding: 10px 15px;
+            font-size: 16px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            transition: border 0.3s;
+        }
+
+        #textInput:focus {
+            outline: none;
+            border-color: #007BFF;
+        }
+
+        .mic-icon {
+            font-size: 28px;
+            cursor: pointer;
+            transition: transform 0.3s, color 0.3s;
+            user-select: none;
+        }
+
+        .mic-icon:hover {
+            transform: scale(1.1);
+        }
+
+        .mic-icon.active {
+            color: #28a745;
+            animation: pulse 1.5s infinite;
+        }
+
+        .mic-icon.processing {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(1.2);
+            }
+
+            100% {
+                transform: scale(1);
+            }
+        }
+
+        #chatBox {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            height: 300px;
+            overflow-y: auto;
+        }
+
+        .response-msg {
+            margin-bottom: 10px;
+            padding: 10px 15px;
+            background-color: #e6ffed;
+            border-left: 4px solid #28a745;
+            border-radius: 5px;
+            font-size: 15px;
+            color: #333;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Chat Bot</h2>
+    <div class="input-container">
+        <input type="text" id="textInput" placeholder="write something..." />
+        <span class="mic-icon" id="micIcon">🎤</span>
+    </div>
+    <div id="chatBox">
+    </div>
+    <script>
+        const micIcon = document.getElementById("micIcon");
+        const chatBox = document.getElementById("chatBox");
+        let audioStream = null;
+        let socket = null;
+        let isRecording = false;
+        let isProcessing = false;
+        let audioContext = null;
+        let sourceNode = null;
+        let processorNode = null;
+
+        micIcon.addEventListener('click', async () =>
+        {
+            if (isProcessing) return;
+
+            try
+            {
+                isProcessing = true;
+                micIcon.classList.add("processing");
+
+                if (!isRecording)
+                {
+                    await startRecording();
+                } else
+                {
+                    await stopRecording();
+                }
+            } catch (error)
+            {
+                console.error("Process Error:", error);
+                micIcon.classList.remove("active", "processing");
+                isRecording = false;
+            } finally
+            {
+                isProcessing = false;
+                micIcon.classList.remove("processing");
+            }
+        });
+
+        function convertFloat32ToInt16(float32Array)
+        {
+            const int16Array = new Int16Array(float32Array.length);
+            for (let i = 0; i < float32Array.length; i++)
+            {
+                const val = Math.min(1, Math.max(-1, float32Array[i])) * 32767;
+                int16Array[i] = val;
+            }
+            return int16Array;
+        }
+
+        document.getElementById('textInput').addEventListener('keypress', async (e) =>
+        {
+            if (e.key === 'Enter')
+            {
+                const inputText = e.target.value.trim();
+                if (inputText)
+                {
+                    try
+                    {
+                        const textSocket = new WebSocket('ws://localhost:8000/text');
+
+                        textSocket.onopen = () =>
+                        {
+                            textSocket.send(JSON.stringify({
+                                type: "text_message",
+                                content: inputText
+                            }));
+                            e.target.value = '';
+                        };
+
+                        textSocket.onmessage = (event) =>
+                        {
+                            const response = JSON.parse(event.data);
+                            if (response.success)
+                            {
+                                addResponseToChat(response.message);
+                            }
+                            textSocket.close();
+                        };
+
+                        textSocket.onerror = (err) =>
+                        {
+                            console.error("Text Socket error:", err);
+                            textSocket.close();
+                        };
+
+                    } catch (error)
+                    {
+                        console.error("Text send error:", error);
+                    }
+                }
+            }
+        });
+
+
+        async function startRecording()
+        {
+            try
+            {
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                });
+
+                socket = new WebSocket('ws://localhost:8000/ws');
+
+                socket.onopen = () =>
+                {
+                    console.log("WebSocket connected");
+                    audioContext = new AudioContext({ sampleRate: 16000 });
+                    sourceNode = audioContext.createMediaStreamSource(audioStream);
+                    processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+                    processorNode.onaudioprocess = (event) =>
+                    {
+                        if (!isRecording) return;
+                        const audioData = event.inputBuffer.getChannelData(0);
+                        const int16Data = convertFloat32ToInt16(audioData);
+                        if (socket.readyState === WebSocket.OPEN)
+                        {
+                            socket.send(int16Data.buffer);
+                        }
+                    };
+
+                    sourceNode.connect(processorNode);
+                    processorNode.connect(audioContext.destination);
+                    isRecording = true;
+                    micIcon.classList.add("active");
+                    console.log("Recording started");
+                };
+
+                socket.onmessage = (event) =>
+                {
+                    try
+                    {
+                        const response = JSON.parse(event.data);
+                        if (response.success)
+                        {
+                            addResponseToChat(response.message);
+                            if (response.is_final)
+                            {
+                                cleanupResources();
+                            }
+                        }
+                    } catch (error)
+                    {
+                        console.error("Invalid data:", event.data);
+                    }
+                };
+
+                socket.onclose = () =>
+                {
+                    console.log("WebSocket closed");
+                    if (isRecording)
+                    {
+                        cleanupResources();
+                    }
+                };
+
+                socket.onerror = (err) =>
+                {
+                    console.error("WebSocket error:", err);
+                    cleanupResources();
+                };
+
+            } catch (err)
+            {
+                console.error("Error accessing audio:", err);
+                cleanupResources();
+                throw err;
+            }
+        }
+
+
+        async function stopRecording()
+        {
+            if (!isRecording) return;
+            isRecording = false;
+            console.log("Stopping recording...");
+
+            try
+            {
+                if (processorNode)
+                {
+                    processorNode.disconnect();
+                    processorNode.onaudioprocess = null;
+                }
+                if (sourceNode) sourceNode.disconnect();
+                if (audioContext)
+                {
+                    await audioContext.close();
+                }
+                if (audioStream)
+                {
+                    audioStream.getTracks().forEach(track => track.stop());
+                }
+            } catch (e)
+            {
+                console.error("Error stopping audio:", e);
+            }
+
+            if (socket && socket.readyState === WebSocket.OPEN)
+            {
+                socket.send(JSON.stringify({ action: "END_OF_STREAM" }));
+            }
+
+            micIcon.classList.remove("active");
+            console.log("Recording stopped, waiting for final response");
+        }
+
+        function cleanupResources()
+        {
+            isRecording = false;
+            try
+            {
+                if (processorNode)
+                {
+                    processorNode.disconnect();
+                    processorNode.onaudioprocess = null;
+                    processorNode = null;
+                }
+                if (sourceNode)
+                {
+                    sourceNode.disconnect();
+                    sourceNode = null;
+                }
+                if (audioContext && audioContext.state !== 'closed')
+                {
+                    audioContext.close().catch(e => console.error("AudioContext close error:", e));
+                    audioContext = null;
+                }
+                if (audioStream)
+                {
+                    audioStream.getTracks().forEach(track => track.stop());
+                    audioStream = null;
+                }
+                if (socket && socket.readyState === WebSocket.OPEN)
+                {
+                    socket.close();
+                }
+            } catch (e)
+            {
+                console.error("Cleanup error:", e);
+            }
+            micIcon.classList.remove("active", "processing");
+            console.log("Resources cleaned up");
+        }
+
+        function addResponseToChat(message)
+        {
+            const div = document.createElement("div");
+            div.className = "response-msg";
+            div.textContent = message;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+    </script>
+</body>
+
+</html>
