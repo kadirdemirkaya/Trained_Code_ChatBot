@@ -70,3 +70,6 @@ This project is a system that performs real-time audio streaming and transcripti
    ```bash
    Open the HTML file in a web browser.
    ```
+
+![image alt](https://github.com/kadirdemirkaya/Trained_Code_ChatBot/blob/678cc68135e0fd692c3dee5af93a08f19fe9f807/Images/cb1.png)
+![image alt](https://github.com/kadirdemirkaya/Trained_Code_ChatBot/blob/678cc68135e0fd692c3dee5af93a08f19fe9f807/Images/cb2.png)
